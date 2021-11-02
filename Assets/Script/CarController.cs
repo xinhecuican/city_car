@@ -1,15 +1,30 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 public class CarController : MonoBehaviour
 {
+    private class Lights
+    {
+        public Transform light_transform;
+        public Light FrontL;
+        public Light FrontR;
+        public void front_visibility()
+        {
+            bool enable = FrontL.enabled;
+            FrontL.enabled = !enable;
+            FrontR.enabled = !enable;
+        }
+    }
+    private Lights lights;
     private MeshRenderer[] wheels;
     private WheelCollider[] colliders;
     private float horizontal;
     private float vertical;
-    public float maxDigree = 30f;
-    public float maxMotor = 3300f;
+    public float baseDigree = 20f;
+    private float shiftDigree = 0f;
+    public float maxMotor = 30000f;
     public float maxSpeed = 200f;
     public float spring = 1000f;
     private float current_torque;
@@ -18,27 +33,81 @@ public class CarController : MonoBehaviour
     private float old_rotation;
 
     private int CurrentGear;
-    private int EngineRPM;
-    private int MaxEngineRPM = 3000;
-    private float[] GearRatio =  {4.06f, 2.3f, 1.59f, 1.25f, 1f, 0.8f};
-    private float MinEngineRPM = 1000;
+    private float EngineRPM;
+    private int MaxEngineRPM = 1500;
+    private float[] GearRatio =  {3.06f, 2.3f, 1.59f, 4.02f};
+    private float MinEngineRPM = 600;
+
+    private void Awake()
+    {
+        lights = new Lights();
+        wheels = GameObject.FindGameObjectWithTag("CarWheels").GetComponentsInChildren<MeshRenderer>();
+        colliders = GameObject.FindGameObjectWithTag("WheelColliders").GetComponentsInChildren<WheelCollider>();
+        lights.light_transform = GameObject.Find("Lights").transform;
+        lights.FrontL = lights.light_transform.GetChild(0).GetComponent<Light>();
+        lights.FrontR = lights.light_transform.GetChild(1).GetComponent<Light>();
+        lights.FrontR.enabled = false;
+        lights.FrontL.enabled = false;
+    }
 
     // Start is called before the first frame update
     void Start()
     {
         rigidBody = GameObject.FindObjectOfType<Rigidbody>();
-        wheels = GameObject.FindGameObjectWithTag("CarWheels").GetComponentsInChildren<MeshRenderer>();
-        colliders = GameObject.FindGameObjectWithTag("WheelColliders").GetComponentsInChildren<WheelCollider>();
         Vector3 vec = rigidBody.centerOfMass;
         vec.y -= 0.1f;
         rigidBody.centerOfMass = vec;
-        current_torque = 50f;
+        current_torque = maxMotor;
+        CurrentGear = 0;
     }
 
     private void Update()
     {
         float x = Input.GetAxis("Mouse X");
         float y = Input.GetAxis("Mouse Y");
+        for (int i = 0; i < 4; i++)
+        {
+            Vector3 pos;
+            Quaternion quat;
+            colliders[i].GetWorldPose(out pos, out quat);
+            wheels[i].transform.position = pos;
+            wheels[i].transform.rotation = quat;
+        }
+
+        if(Input.GetKeyDown(KeyCode.G))
+        {
+            lights.front_visibility();
+        }
+
+        if(Input.GetKeyDown(KeyCode.Space))
+        {
+            for(int i=0; i<4; i++)
+            {
+                if (i < 2)
+                {
+                    WheelFrictionCurve curve = colliders[i].sidewaysFriction;
+                    curve.extremumValue = 0.6f;
+                    colliders[i].sidewaysFriction = curve;
+                }
+                else
+                {
+                    WheelFrictionCurve curve = colliders[i].sidewaysFriction;
+                    curve.extremumValue = 0.3f;
+                    colliders[i].sidewaysFriction = curve;
+                }
+            }
+            shiftDigree = 30f;
+        }
+        else if(Input.GetKeyUp(KeyCode.Space))
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                WheelFrictionCurve curve = colliders[i].sidewaysFriction;
+                curve.extremumValue = 1f;
+                colliders[i].sidewaysFriction = curve;
+            }
+            shiftDigree = 0f;
+        }
     }
 
     // Update is called once per frame
@@ -48,14 +117,20 @@ public class CarController : MonoBehaviour
         vertical = Input.GetAxis("Vertical");
         Move();
     }
+
+    void OnCollisionEnter(Collision collision)
+    {
+
+        if (collision.transform.tag == "Car")
+        {
+            rigidBody.angularVelocity = new Vector3(-rigidBody.angularVelocity.x * 0.5f, rigidBody.angularVelocity.y * 0.5f, -rigidBody.angularVelocity.z * 0.5f);
+            rigidBody.velocity = new Vector3(rigidBody.velocity.x, rigidBody.velocity.y * 0.5f, rigidBody.velocity.z);
+        }
+
+    }
     void Move()
     {
         TorqueControl();
-        for (int j = 0; j < 4; j++)//轮胎旋转
-        {
-            wheels[j].transform.localRotation = Quaternion.Euler(colliders[j].rpm / 60 * 360,
-                colliders[j].steerAngle, wheels[j].transform.localRotation.z);
-        }
         SteerHelper();
         colliders[0].attachedRigidbody.AddForce(-transform.up * 100f *
                                                          colliders[0].attachedRigidbody.velocity.magnitude);
@@ -82,9 +157,9 @@ public class CarController : MonoBehaviour
         else
         {
             current_torque += 5;
-            if (current_torque > 100f)
+            if (current_torque > maxMotor)
             {
-                current_torque = 100f;
+                current_torque = maxMotor;
             }
         }
     }
@@ -145,12 +220,12 @@ public class CarController : MonoBehaviour
 
     private void TorqueControl()
     {
+        ShiftGears();
         for (int i = 0; i < 4; i++)//汽车动力
         {
             if (i < 2)
             {
-                colliders[i].steerAngle = horizontal * maxDigree;
-
+                colliders[i].steerAngle = horizontal * (baseDigree + shiftDigree + rigidBody.velocity.magnitude / 3);
             }
             else
             {
@@ -159,7 +234,7 @@ public class CarController : MonoBehaviour
                 {
                     brake = maxBrake;
                 }
-                colliders[i].motorTorque = current_torque * vertical / 2;
+                colliders[i].motorTorque = current_torque / GearRatio[CurrentGear] * vertical;
                 colliders[i].brakeTorque = brake;
             }
         }
@@ -167,7 +242,13 @@ public class CarController : MonoBehaviour
 
     void ShiftGears()
     {
+        EngineRPM = (colliders[0].rpm + colliders[1].rpm) / 2 * GearRatio[CurrentGear];
         int AppropriateGear = CurrentGear;
+        if(colliders[0].rpm < -5 && vertical < 0)//倒车
+        {
+            CurrentGear = 3;
+            return;
+        }
         if (EngineRPM >= MaxEngineRPM)
         {
             for (int i = 0; i < GearRatio.Length; i++)
@@ -178,7 +259,6 @@ public class CarController : MonoBehaviour
                     break;
                 }
             }
-            CurrentGear = AppropriateGear;
         }
 
         if (EngineRPM <= MaxEngineRPM)
@@ -191,7 +271,7 @@ public class CarController : MonoBehaviour
                     break;
                 }
             }
-            CurrentGear = AppropriateGear;
         }
+        CurrentGear = AppropriateGear;
     }
 }
